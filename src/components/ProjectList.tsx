@@ -7,7 +7,8 @@ import {
   ChevronRight, 
   Settings,
   MoreVertical,
-  Trash2
+  Trash2,
+  MessageSquare
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -50,6 +51,10 @@ interface ProjectListProps {
    */
   onProjectDelete?: (project: Project) => Promise<void>;
   /**
+   * Callback when new Claude session is requested for a project
+   */
+  onNewClaudeSession?: (project: Project) => void;
+  /**
    * Whether the list is currently loading
    */
   loading?: boolean;
@@ -83,6 +88,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
   onProjectClick,
   onProjectSettings,
   onProjectDelete,
+  onNewClaudeSession,
   className,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
@@ -178,6 +184,23 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                   </div>
                   
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* New Claude Session Button */}
+                    {onNewClaudeSession && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onNewClaudeSession(project);
+                        }}
+                        title="新建Claude会话"
+                      >
+                        <MessageSquare className="h-4 w-4 mr-1" />
+                        <span className="text-xs">新会话</span>
+                      </Button>
+                    )}
+                    
                     {(onProjectSettings || onProjectDelete) && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>

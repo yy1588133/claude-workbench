@@ -108,11 +108,21 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const [queuedPromptsCollapsed, setQueuedPromptsCollapsed] = useState(false);
   
   
-  // Enhanced scroll management
+  // Enhanced scroll management with context awareness
   const [userScrolled, setUserScrolled] = useState(false);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastScrollPositionRef = useRef(0);
+  
+  // Context management states
+  const [contextWarningShown, setContextWarningShown] = useState(false);
+  const [lastCompactionTime, setLastCompactionTime] = useState<number>(0);
+  const [compactionCooldown, setCompactionCooldown] = useState(false);
+  
+  // Context limits configuration
+  const TOKEN_WARNING_THRESHOLD = 180000; // 警告阈值：180K tokens
+  const TOKEN_AUTO_COMPACT_THRESHOLD = 200000; // 自动压缩阈值：200K tokens  
+  const COMPACTION_COOLDOWN_MS = 300000; // 压缩冷却时间：5分钟
   
   const parentRef = useRef<HTMLDivElement>(null);
   const unlistenRefs = useRef<UnlistenFn[]>([]);
@@ -254,44 +264,75 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     onStreamingChange?.(isLoading, claudeSessionId);
   }, [isLoading, claudeSessionId, onStreamingChange]);
 
-  // Smart scroll detection - detect when user manually scrolls
+  // Enhanced scroll detection - detect when user manually scrolls
   useEffect(() => {
     const scrollElement = parentRef.current;
     if (!scrollElement) return;
 
+    // let isUserInitiatedScroll = false;
+    let scrollStartTime = 0;
+
     const handleScroll = () => {
       const { scrollTop, scrollHeight, clientHeight } = scrollElement;
       const currentScrollPosition = scrollTop;
-      const isAtBottom = scrollTop + clientHeight >= scrollHeight - 50; // 50px threshold
+      const isAtBottom = scrollTop + clientHeight >= scrollHeight - 10; // Reduced threshold for more accurate detection
       
-      // Detect if this was a user-initiated scroll
+      // More sophisticated user scroll detection
       const scrollDifference = Math.abs(currentScrollPosition - lastScrollPositionRef.current);
-      if (scrollDifference > 5) { // Only count significant scroll movements
-        const wasUserScroll = !shouldAutoScroll || scrollDifference > 100;
+      const now = Date.now();
+      
+      if (scrollDifference > 3) { // Reduced threshold for better sensitivity
+        // Check if this scroll happened quickly (likely user-initiated)
+        // or if we're moving away from bottom (definitely user-initiated)
+        const isScrollingUp = currentScrollPosition < lastScrollPositionRef.current;
+        const isQuickScroll = (now - scrollStartTime) < 100 && scrollDifference > 50;
         
-        if (wasUserScroll) {
+        if (isScrollingUp || isQuickScroll || !shouldAutoScroll) {
+          // isUserInitiatedScroll = true;
           setUserScrolled(!isAtBottom);
           setShouldAutoScroll(isAtBottom);
         }
+        
+        if (scrollStartTime === 0) {
+          scrollStartTime = now;
+        }
+      } else {
+        // Reset scroll start time for next scroll sequence
+        scrollStartTime = 0;
       }
       
       lastScrollPositionRef.current = currentScrollPosition;
       
-      // Reset user scroll state after inactivity
+      // Reset user scroll state with longer delay to avoid interruptions
       if (scrollTimeoutRef.current) {
         clearTimeout(scrollTimeoutRef.current);
       }
       scrollTimeoutRef.current = setTimeout(() => {
         if (isAtBottom) {
+          // isUserInitiatedScroll = false;
           setUserScrolled(false);
           setShouldAutoScroll(true);
         }
-      }, 2000);
+      }, 3000); // Increased delay to 3 seconds
     };
 
+    const handleMouseDown = () => {
+      // isUserInitiatedScroll = true;
+    };
+
+    const handleWheel = () => {
+      // isUserInitiatedScroll = true;
+    };
+
+    // Add multiple event listeners to catch user interactions
     scrollElement.addEventListener('scroll', handleScroll, { passive: true });
+    scrollElement.addEventListener('mousedown', handleMouseDown, { passive: true });
+    scrollElement.addEventListener('wheel', handleWheel, { passive: true });
+    
     return () => {
       scrollElement.removeEventListener('scroll', handleScroll);
+      scrollElement.removeEventListener('mousedown', handleMouseDown);
+      scrollElement.removeEventListener('wheel', handleWheel);
       if (scrollTimeoutRef.current) {
         clearTimeout(scrollTimeoutRef.current);
       }
@@ -315,27 +356,33 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     }
   }, [displayableMessages.length, shouldAutoScroll, userScrolled]);
 
-  // Enhanced streaming scroll - only when user hasn't manually scrolled away
+  // Gentle streaming scroll - only when user hasn't manually scrolled away
   useEffect(() => {
     if (isLoading && displayableMessages.length > 0 && shouldAutoScroll && !userScrolled) {
       const scrollToBottom = () => {
         if (parentRef.current) {
           const scrollElement = parentRef.current;
-          scrollElement.scrollTo({
-            top: scrollElement.scrollHeight,
-            behavior: 'smooth'
-          });
+          const { scrollTop, scrollHeight, clientHeight } = scrollElement;
+          const isNearBottom = scrollTop + clientHeight >= scrollHeight - 100;
+          
+          // Only scroll if we're already near the bottom to avoid interrupting user reading
+          if (isNearBottom) {
+            scrollElement.scrollTo({
+              top: scrollElement.scrollHeight,
+              behavior: 'smooth'
+            });
+          }
         }
       };
 
-      // More frequent updates during streaming for better UX
-      const intervalId = setInterval(scrollToBottom, 300);
+      // Less frequent updates during streaming to reduce interruptions
+      const intervalId = setInterval(scrollToBottom, 800);
       
       return () => clearInterval(intervalId);
     }
   }, [isLoading, displayableMessages.length, shouldAutoScroll, userScrolled]);
 
-  // Calculate total tokens from messages and update context manager
+  // Enhanced context management with automatic compaction
   useEffect(() => {
     const tokens = messages.reduce((total, msg) => {
       if (msg.message?.usage) {
@@ -347,7 +394,82 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       return total;
     }, 0);
     setTotalTokens(tokens);
-  }, [messages]);
+    
+    // Context length management
+    const now = Date.now();
+    const timeSinceLastCompaction = now - lastCompactionTime;
+    const isInCooldown = timeSinceLastCompaction < COMPACTION_COOLDOWN_MS;
+    
+    // Check if we need to show warning or auto-compact
+    if (tokens >= TOKEN_AUTO_COMPACT_THRESHOLD && !isInCooldown && !compactionCooldown && effectiveSession) {
+      console.log(`[ContextManager] Auto-compacting at ${tokens} tokens`);
+      handleAutoCompaction();
+    } else if (tokens >= TOKEN_WARNING_THRESHOLD && !contextWarningShown && !isInCooldown) {
+      console.log(`[ContextManager] Showing context warning at ${tokens} tokens`);
+      setContextWarningShown(true);
+    } else if (tokens < TOKEN_WARNING_THRESHOLD && contextWarningShown) {
+      // Reset warning if tokens drop below threshold (after manual compaction)
+      setContextWarningShown(false);
+    }
+  }, [messages, lastCompactionTime, contextWarningShown, compactionCooldown, effectiveSession]);
+  
+  // Handle automatic compaction
+  const handleAutoCompaction = async () => {
+    if (!effectiveSession || compactionCooldown || !projectPath) return;
+    
+    try {
+      console.log('[ContextManager] Starting automatic compaction');
+      setCompactionCooldown(true);
+      setLastCompactionTime(Date.now());
+      
+      // Add system message about compaction
+      const compactionStartMessage: ClaudeStreamMessage = {
+        type: "system",
+        subtype: "info",
+        result: "系统检测到对话内容较长，正在自动压缩以优化性能...",
+        timestamp: new Date().toISOString(),
+        receivedAt: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, compactionStartMessage]);
+      
+      // Execute compaction command
+      const compactionPrompt = "/compact 请保留关键信息，压缩不必要的冗余内容，确保后续对话的连贯性。";
+      await handleSendPrompt(compactionPrompt, "sonnet");
+      
+      // Reset warning state
+      setContextWarningShown(false);
+      
+    } catch (error) {
+      console.error('[ContextManager] Auto-compaction failed:', error);
+      const errorMessage: ClaudeStreamMessage = {
+        type: "system",
+        subtype: "error",
+        result: `自动压缩失败: ${error instanceof Error ? error.message : '未知错误'}。建议手动使用 /compact 命令进行压缩。`,
+        timestamp: new Date().toISOString(),
+        receivedAt: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    }
+    
+    // Reset cooldown after 5 minutes
+    setTimeout(() => {
+      setCompactionCooldown(false);
+    }, COMPACTION_COOLDOWN_MS);
+  };
+  
+  // Manual compaction trigger
+  const handleManualCompaction = async () => {
+    if (!effectiveSession || !projectPath) return;
+    
+    try {
+      const compactionPrompt = "/compact 请保留关键信息和上下文，压缩冗余内容以优化token使用。";
+      await handleSendPrompt(compactionPrompt, "sonnet");
+      setContextWarningShown(false);
+      setLastCompactionTime(Date.now());
+    } catch (error) {
+      console.error('[ContextManager] Manual compaction failed:', error);
+    }
+  };
 
   const loadSessionHistory = async () => {
     if (!session) return;
@@ -1186,12 +1308,67 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
               </div>
             )}
             
-            {/* Token Counter in Toolbar */}
+            {/* Context Warning Banner */}
+            <AnimatePresence>
+              {contextWarningShown && totalTokens >= TOKEN_WARNING_THRESHOLD && (
+                <motion.div
+                  initial={{ opacity: 0, y: -20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="mx-4 mb-4 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                          对话内容较长
+                        </p>
+                        <p className="text-xs text-amber-600 dark:text-amber-300">
+                          当前 {totalTokens.toLocaleString()} tokens，建议压缩以优化性能
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleManualCompaction}
+                        disabled={isLoading || compactionCooldown}
+                        className="text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700"
+                      >
+                        {compactionCooldown ? "压缩中..." : "立即压缩"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setContextWarningShown(false)}
+                        className="text-amber-600 dark:text-amber-400"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Token Counter with enhanced context info */}
             {totalTokens > 0 && (
-              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/50 rounded-md border text-xs text-muted-foreground">
+              <div className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs transition-colors",
+                totalTokens >= TOKEN_AUTO_COMPACT_THRESHOLD 
+                  ? "bg-red-50 border-red-200 text-red-700 dark:bg-red-900/20 dark:border-red-800 dark:text-red-300" 
+                  : totalTokens >= TOKEN_WARNING_THRESHOLD
+                  ? "bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300"
+                  : "bg-muted/50 border-border text-muted-foreground"
+              )}>
                 <Hash className="h-3 w-3" />
                 <span className="font-mono font-medium">{totalTokens.toLocaleString()}</span>
                 <span>tokens</span>
+                {compactionCooldown && (
+                  <div className="w-1 h-1 bg-current rounded-full animate-pulse" />
+                )}
               </div>
             )}
             

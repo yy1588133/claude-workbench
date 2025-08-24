@@ -128,6 +128,18 @@ function App() {
   };
 
   /**
+   * 处理从项目直接新建Claude会话
+   * Handles creating a new Claude session directly from a project
+   */
+  const handleNewClaudeSessionFromProject = (project: Project) => {
+    setSelectedSession(null); // 清除任何现有会话选择
+    // 设置项目路径到ClaudeCodeSession
+    handleViewChange("claude-code-session");
+    // 通过选择项目来设置项目路径
+    setSelectedProject(project);
+  };
+
+  /**
    * 在交互式界面中打开新的 Claude Code 会话
    * Opens a new Claude Code session in the interactive UI
    */
@@ -402,6 +414,7 @@ function App() {
                           onProjectClick={handleProjectClick}
                           onProjectSettings={handleProjectSettings}
                           onProjectDelete={handleProjectDelete}
+                          onNewClaudeSession={handleNewClaudeSessionFromProject}
                           loading={loading}
                           className="animate-fade-in"
                         />
@@ -432,8 +445,10 @@ function App() {
         return (
           <ClaudeCodeSession
             session={selectedSession || undefined}
+            initialProjectPath={selectedProject?.path}
             onBack={() => {
               setSelectedSession(null);
+              setSelectedProject(null);
               handleViewChange("projects");
             }}
             onStreamingChange={(isStreaming, sessionId) => {

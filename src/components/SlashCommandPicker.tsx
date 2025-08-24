@@ -99,13 +99,25 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
     const query = searchQuery.toLowerCase();
     let filteredByTab: SlashCommand[];
     
-    // Show only default/built-in commands
-    filteredByTab = commands.filter(cmd => cmd.scope === "default");
+    // Show all commands (default, project, and user)
+    filteredByTab = commands;
     
     // Then filter by search query
     let filtered: SlashCommand[];
     if (!query) {
       filtered = filteredByTab;
+      // When no query, sort by scope priority (default, project, user) then alphabetically
+      filtered.sort((a, b) => {
+        const scopeOrder = { default: 0, project: 1, user: 2 };
+        const aScopePriority = scopeOrder[a.scope as keyof typeof scopeOrder] ?? 3;
+        const bScopePriority = scopeOrder[b.scope as keyof typeof scopeOrder] ?? 3;
+        
+        if (aScopePriority !== bScopePriority) {
+          return aScopePriority - bScopePriority;
+        }
+        
+        return a.name.localeCompare(b.name);
+      });
     } else {
       filtered = filteredByTab.filter(cmd => {
         // Match against command name
@@ -253,9 +265,9 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
           </Button>
         </div>
         
-        {/* Default Commands Header */}
+        {/* Commands Header */}
         <div className="mt-3">
-          <h3 className="text-sm font-medium text-muted-foreground px-1">Default Commands</h3>
+          <h3 className="text-sm font-medium text-muted-foreground px-1">Available Commands</h3>
         </div>
       </div>
 
@@ -283,11 +295,11 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
                   <div className="flex flex-col items-center justify-center h-full">
                     <Command className="h-8 w-8 text-muted-foreground mb-2" />
                     <span className="text-sm text-muted-foreground">
-                      {searchQuery ? 'No commands found' : 'No default commands available'}
+                      {searchQuery ? 'No commands found' : 'No commands available'}
                     </span>
                     {!searchQuery && (
                       <p className="text-xs text-muted-foreground mt-2 text-center px-4">
-                        Default commands are built-in system commands
+                        Commands include default, project-specific, and user-defined slash commands
                       </p>
                     )}
                   </div>
@@ -319,8 +331,13 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
                                 <span className="font-medium">
                                   {command.full_command}
                                 </span>
-                                <span className="text-xs text-muted-foreground px-1.5 py-0.5 bg-muted rounded">
-                                  {command.scope}
+                                <span className={cn(
+                                  "text-xs px-1.5 py-0.5 rounded text-white",
+                                  command.scope === "default" && "bg-blue-500",
+                                  command.scope === "project" && "bg-green-500", 
+                                  command.scope === "user" && "bg-purple-500"
+                                )}>
+                                  {command.scope === "default" ? "Default" : command.scope === "project" ? "Project" : "User"}
                                 </span>
                               </div>
                               {command.description && (
